@@ -99,11 +99,6 @@ details.set{margin-top:12px}
         <input id="pibToken" type="password" autocomplete="off">
       </div>
       <div style="margin-top:12px">
-        <label for="proxy">Proxy-Adresse (Cloudflare-Worker)</label>
-        <input id="proxy" type="text" autocomplete="off" spellcheck="false">
-        <p class="hint">Der Worker muss für notams.aim.faa.gov POST-Anfragen weiterreichen.</p>
-      </div>
-      <div style="margin-top:12px">
         <label for="paste">NOTAM-Text einfügen (z. B. aus dem DFS-Portal oder einer PIB)</label>
         <textarea id="paste" placeholder="A1234/26 NOTAMN&#10;Q) EDGG/QWPLW/..."></textarea>
         <div style="margin-top:8px"><button class="ghost" id="parse">Text auswerten</button></div>
@@ -117,8 +112,6 @@ details.set{margin-top:12px}
 </main>
 
 <script>
-const DEFAULT_PROXY = "https://flugwetter.c8c58p6hpv.workers.dev/?url=";
-const FAA = "https://notams.aim.faa.gov/notamSearch/search";
 const $ = id => document.getElementById(id);
 const store = {
   get(k, d){ try { return localStorage.getItem(k) ?? d; } catch(e){ return d; } },
@@ -169,14 +162,11 @@ function when(n){
   return `${s} bis ${e}`;
 }
 
-async function fetchLoc(loc, proxy){
-  const body = new URLSearchParams({
-    searchType:"0", designatorsForLocation:loc, formatType:"ICAO",
-    notamsOnly:"false", offset:"0", radius:"10"
-  }).toString();
-  const r = await fetch(proxy + encodeURIComponent(FAA), {
-    method:"POST", headers:{"Content-Type":"application/x-www-form-urlencoded"}, body
-  });
+async function fetchLoc(loc){
+  const base = $("pibUrl").value.trim().replace(/\/+$/,""), token = $("pibToken").value;
+  if (!base || !token) throw new Error("PIB-Worker und Token fehlen in den Einstellungen");
+  const r = await fetch(base + "/faa?loc=" + loc, { headers:{ Authorization:"Bearer " + token } });
+  if (r.status === 401) throw new Error("Token wird vom Worker nicht akzeptiert");
   if (!r.ok) throw new Error(`${loc}: Antwort ${r.status}`);
   const j = await r.json();
   return (j.notamList||[]).map(x => parseNotam(x.icaoMessage || x.traditionalMessage, loc)).filter(Boolean);
@@ -220,10 +210,8 @@ async function load(){
   const locs = [...new Set($("loc").value.toUpperCase().split(/[\s,;]+/).filter(x=>/^[A-Z]{4}$/.test(x)))];
   if (!locs.length){ $("status").innerHTML = '<span class="err">Bitte mindestens einen vierstelligen ICAO-Code eingeben.</span>'; return; }
   store.set("notam.loc", locs.join(" "));
-  const proxy = $("proxy").value.trim() || DEFAULT_PROXY;
-  store.set("notam.proxy", proxy);
   $("status").textContent = "Lade NOTAMs …"; $("go").disabled = true;
-  const res = await Promise.allSettled(locs.map(l => fetchLoc(l, proxy)));
+  const res = await Promise.allSettled(locs.map(l => fetchLoc(l)));
   const errs = [], items = [];
   res.forEach((r,i)=> r.status==="fulfilled" ? items.push(...r.value.map(n=>({...n, query:locs[i]}))) : errs.push(r.reason.message || String(r.reason)));
   all = items;
@@ -281,7 +269,7 @@ function render(errs=[], fresh=false){
   if (!list.length && (all.length || fresh)) out.innerHTML = '<div class="empty">Keine NOTAMs im gewählten Zeitraum und in den gewählten Kategorien.</div>';
   const base = all.length ? `${list.length} von ${new Set(all.map(n=>(n.id||n.raw)+n.query)).size} NOTAMs angezeigt. Stand ${fmt.format(Date.now())} Uhr. Zeiten in deutscher Ortszeit.` : "";
   const info = meta ? meta + " " : "";
-  $("status").innerHTML = (errs.length ? `<span class="err">${errs.join(" · ")}.${$("src").value==="faa" ? " Ist der Proxy für POST und notams.aim.faa.gov freigegeben?" : ""}</span><br>` : "") + info + base;
+  $("status").innerHTML = (errs.length ? `<span class="err">${errs.join(" · ")}.${$("src").value==="faa" ? " Ist der PIB-Worker mit der Route /faa veröffentlicht?" : ""}</span><br>` : "") + info + base;
 }
 
 $("go").onclick = load;
@@ -295,7 +283,6 @@ $("parse").onclick = () => {
 };
 
 // Startwerte
-$("proxy").value = store.get("notam.proxy", DEFAULT_PROXY);
 $("loc").value = store.get("notam.loc", "");
 $("src").value = store.get("notam.src", "dfs");
 $("pibUrl").value = store.get("notam.pibUrl", "");
